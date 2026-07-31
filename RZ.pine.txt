@@ -1,0 +1,145 @@
+// This Pine Script code is subject to the Mozilla Public License 2.0
+
+//@version=6
+indicator("RZ", 'RZ', overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ==========================================
+// ZIGZAG CORE LOGIC WITH H/L LABELS
+// NON-REPAINTING: pivots confirmed only after `depth`
+// bars have closed. Nothing is drawn on the live bar.
+// ==========================================
+type Settings
+    float devThreshold = 5.0
+    int depth = 10
+    color lineColor = #2962FF
+    bool draw = true
+    bool allowZigZagOnOneBar = true
+
+type Pivot
+    line ln
+    label lb
+    bool isHigh
+    chart.point start
+    chart.point end
+
+type ZigZag
+    Settings settings
+    array<Pivot> pivots
+
+// Detects a confirmed pivot using only closed bars.
+findPivotPoint(series float src, series int length, simple bool isHigh) =>
+    chart.point result = na
+    if length > 0 and length * 2 <= bar_index
+        float pivotPrice = src[length]
+        bool isFound = true
+        for i = 0 to length - 1
+            if (isHigh and src[i] > pivotPrice) or (not isHigh and src[i] < pivotPrice)
+                isFound := false
+                break
+        if isFound
+            for i = length + 1 to 2 * length
+                if (isHigh and src[i] >= pivotPrice) or (not isHigh and src[i] <= pivotPrice)
+                    isFound := false
+                    break
+        if isFound
+            result := chart.point.new(time[length], bar_index[length], pivotPrice)
+    result
+
+calcDev(series float basePrice, series float price) =>
+    100 * (price - basePrice) / math.abs(basePrice)
+
+makePivotLabel(series bool isHigh, series chart.point point) =>
+    label.new(point, text = isHigh ? "H" : "L", color = #f0060600, textcolor = isHigh ? color.green : color.red, style = isHigh ? label.style_label_down : label.style_label_up, xloc = xloc.bar_time, yloc = isHigh ? yloc.abovebar : yloc.belowbar)
+
+method updatePivot(Pivot this, chart.point point, Settings settings) =>
+    this.end := point
+    if not na(this.ln)
+        this.ln.set_second_point(this.end)
+    if not na(this.lb)
+        this.lb.set_point(point)
+
+newPivot(series chart.point start, series chart.point end, series bool isHigh, series Settings settings) =>
+    Pivot p = Pivot.new(na, na, isHigh, start, end)
+    if settings.draw
+        p.ln := line.new(start, end, xloc = xloc.bar_time, color = settings.lineColor, width = 1)
+        p.lb := makePivotLabel(isHigh, end)
+    p.updatePivot(end, settings)
+    p
+
+method delete(series Pivot this) =>
+    line.delete(this.ln)
+    label.delete(this.lb)
+
+method isMorePrice(series Pivot this, series chart.point point) =>
+    int m = this.isHigh ? 1 : -1
+    point.price * m > this.end.price * m
+
+method lastPivot(series ZigZag this) =>
+    int numberOfPivots = this.pivots.size()
+    numberOfPivots > 0 ? this.pivots.get(numberOfPivots - 1) : na
+
+method updateLastPivot(series ZigZag this, series chart.point point) =>
+    Pivot lp = this.lastPivot()
+    if this.pivots.size() == 1
+        lp.start := point
+        if this.settings.draw and not na(lp.ln)
+            lp.ln.set_first_point(point)
+    lp.updatePivot(point, this.settings)
+
+method newPivotFound(series ZigZag this, series Pivot new) =>
+    this.pivots.push(new)
+
+method newPivotPointFound(series ZigZag this, simple bool isHigh, series chart.point point) =>
+    Pivot lp = this.lastPivot()
+    if not na(lp)
+        if lp.isHigh == isHigh
+            if lp.isMorePrice(point)
+                this.updateLastPivot(point)
+                true
+            else
+                false
+        else
+            float dev = calcDev(lp.end.price, point.price)
+            if (not lp.isHigh and dev >= this.settings.devThreshold) or (lp.isHigh and dev <= -1 * this.settings.devThreshold)
+                this.newPivotFound(newPivot(lp.end, point, isHigh, this.settings))
+                true
+            else
+                false
+    else
+        this.newPivotFound(newPivot(point, point, isHigh, this.settings))
+        true
+
+// registerPivot / confirmed gating handled inside — function itself
+// is now called unconditionally on every bar.
+method tryFindPivot(series ZigZag this, series float src, simple bool isHigh, series int depth, series bool registerPivot) =>
+    chart.point point = findPivotPoint(src, depth, isHigh)
+    bool changed = false
+    if not na(point) and registerPivot
+        changed := this.newPivotPointFound(isHigh, point)
+    changed
+
+method update(series ZigZag this) =>
+    int depth = math.max(2, math.floor(this.settings.depth / 2))
+    bool confirmed = barstate.isconfirmed
+
+    // Both calls execute on every calculation — gating passed as an argument.
+    bool highFound = this.tryFindPivot(high, true, depth, confirmed)
+    bool lowAllowed = confirmed and (this.settings.allowZigZagOnOneBar or not highFound)
+    bool lowFound = this.tryFindPivot(low, false, depth, lowAllowed)
+
+    highFound or lowFound
+
+newInstance(series Settings settings = na) =>
+    ZigZag.new(na(settings) ? Settings.new() : settings, array.new<Pivot>())
+
+// Settings: Deviation %, Pivot Legs, Line Color, Draw, Allow on One Bar
+var zigZag = newInstance(Settings.new(
+    input.float(0.1, "Price deviation (%)", 0.00001, group = "ZigZag Settings"), 
+    input.int(2, "Pivot legs", 2, group = "ZigZag Settings"), 
+    #2962FF, 
+    true, 
+    true
+))
+
+zigZag.update()
+
