@@ -1,0 +1,619 @@
+//+------------------------------------------------------------------+
+//|                   Pri.mq5  DwarkaDhish                           |
+//|                                           DwarkaDhish            |
+//+------------------------------------------------------------------+
+#property copyright "R1 Shunya Trading System" // Defines the EA's author/developer meta-information
+#property version "7.12"                       // Defines the code iteration version for tracking updates
+#property strict                               // Instructs the MQL5 compiler to apply strict type-checking and syntax validation rules
+
+// === CORE INPUTS ===
+input group "=== Core ==="                     // Visual separator in the EA inputs settings panel
+input ulong Magic = 1;                         // Unique identifier (Magic Number) to prevent interference with other EAs
+input bool ResetState = true;                  // Flag to delete cached progress states and start fresh from Level 1 ($20 balance)
+input bool TestMode = false;                   // If true, disables recovery mode overrides to allow testing backtest variations
+
+// === ZIGZAG INPUTS ===
+input group "=== ZigZag ==="                   // Inputs group header for the price pivot finder
+input double ZZ_Dev = 5.0;                     // Pivot separation filter in pips (replaces old hardcoded 0.0005, makes logic JPY-safe)
+input int ZZ_Depth = 1;                        // Peak scanning depth; defines how many bars on either side must be lower/higher to form a pivot
+input int ZZ_Lookback = 200;                   // Defines history length scanned for drawing swings (actively referenced in loop setup)
+
+// === TRADE INPUTS ===
+input group "=== Trade ==="                    // Inputs group header for trading metrics
+input double TP_Pips = 20.0;                   // Take Profit target measured in Pips (10 Points per Pip on 5-digit brokers)
+input double SL_Pips = 15.0;                   // Stop Loss protection distance measured in Pips
+input double MaxSpread = 20.0;                 // Maximum allowable bid-ask spread in pips (prevents entering during high volatility)
+
+// === SAFE NET INPUTS ===
+input group "=== Safe Net (The Runner Logic) ===" // Inputs group header for break-even and trailing stop controls
+input double BE_Trigger = 11.0;                // Floating profit in pips required before moving Stop Loss to lock-in price
+input double BE_Profit = 5.0;                  // Profit distance in pips to lock in once Break-Even triggers
+input double Trail_Trigger = 20.0;             // Floating profit in pips required to activate the active Trailing Stop
+input double Trail_Dist = 10.0;                // Distance in pips behind the current market price to trail the Stop Loss
+
+// === MOMENTUM INPUTS ===
+input group "=== Momentum ==="                 // Inputs group header for early chain-exits
+input bool EnableChain = true;                 // Toggle switch to check momentum for potential early exits (Chain Take Profit)
+input int Mom_Candles = 3;                     // Number of consecutive trend candles to evaluate for momentum checking
+
+// === M5 TREND FILTER INPUTS ===
+input group "=== M5 Trend Filter ==="          // Inputs group header for multi-timeframe trend confirmation
+input bool EnableM5Filter = true;              // Toggle switch to enable/disable the M5 HMA trend filter
+input int HMA_Period = 9;                      // HMA/LWMA period for M5 timeframe (9 = fast & responsive, low lag)
+
+// === GLOBAL VARIABLES ===
+double pip_size;                               // Global variable holding symbol pip sizing value (corrects for 3/5 digit pricing)
+ENUM_ORDER_TYPE_FILLING order_fill = ORDER_FILLING_IOC; // Variable determining order execution filling policy (FOK, IOC, or Return)
+
+// Virtual Balance & Progression State
+double v_balance = 20.0;                       // Main virtual balance variable tracker (initialized at $20.0)
+int c_level = 1;                               // Tracks the active progression level (1 to 30)
+double l_profit = 0.0;                         // Accumulates level profits to check if step-up goals are met
+bool in_recovery = false;                      // State flag showing if recovery lot safety setting (0.01) is active
+
+// Stepdown Protection State
+bool in_stepdown = false;                      // State flag showing if the system is currently managing a loss stepdown scenario
+int stepdown_level = 0;                        // Remembers the level prior to a stepdown to know where recovery targets lie
+int wins_needed = 0;                           // Count of positive trades required to exit stepdown mode
+
+// Pivot Detection State
+struct Pivot {                                 // Defines a custom data structure storing time, price, and type (high/low) of a swing point
+    datetime time; 
+    double price; 
+    int type; 
+};
+Pivot pivots[];                                // Dynamic array storing list of identified market swing points
+int pivot_count = 0;                           // Tracker storing the total count of pivot records stored in memory
+datetime last_pivot_time = 0;                  // Stores the timestamp of the last executed pivot to prevent multiple entries on the same signal
+
+// Tick & Bar Management State
+datetime last_bar = 0;                         // Stores the opening timestamp of the current bar to detect new candle generation
+double safe_phase = 0;                         // Tracks current protection phase (0 = none, 2 = Break-Even, 3 = Trailing active)
+bool mom_active = false;                       // Reserved state flag to indicate if momentum conditions are met
+int chain_count = 0;                           // Variable to track momentum chain count (reserved for future use)
+bool skip_next = false;                        // Flag to enforce signal skipping after a stepdown event
+
+// === PROGRESSION ARRAYS (Hardcoded) ===
+// Lookup table matching progression levels (0 to 30) to trade volume sizes
+double lots[31] = {0, 0.03,0.04,0.05,0.07,0.09,0.11,0.14,0.19,0.24,0.32,0.41,0.54,0.70,0.91,1.18,1.54,2.00,2.60,3.38,4.39,5.71,7.42,9.65,12.54,16.30,21.19,27.55,35.82,46.56,60.53};
+// Lookup table defining USD targets needed to level-up from the current level
+double goals[31] = {0, 6,7.8,10.14,13.18,17.14,22.28,28.96,37.65,48.94,63.63,82.72,107.53,139.79,181.73,236.25,307.12,399.26,519.04,674.75,877.18,1140.33,1482.43,1927.16,2505.31,3256.90,4233.97,5504.16,7155.41,9302.03,12092.64};
+// Lookup table defining the virtual equity threshold required for each level
+double levels_total[31] = {0, 20, 26, 33.8, 43.94, 57.12, 74.26, 96.54, 125.5, 163.15, 212.09, 275.72, 358.44, 465.97, 605.76, 787.49, 1023.74, 1330.86, 1730.12, 2249.16, 2923.91, 3801.09, 4941.42, 6423.85, 8351.01, 10856.32, 14113.22, 18347.19, 23851.35, 31006.76, 40308.79};
+
+// === FILE HANDLES FOR CSV LOGGING ===
+int log_h = -1;        // Handler for main trade journal
+int log_trades = -1;   // Handler for detailed trade entries/exits
+int log_signals = -1;  // Handler for signal statistics (accepted/rejected)
+int log_state = -1;    // Handler for state flags and balance tracking
+
+//+------------------------------------------------------------------+
+//| Execution wrapper containing filling policy fallback logic       |
+//+------------------------------------------------------------------+
+bool SendOrder(MqlTradeRequest &req, MqlTradeResult &res) {
+    if(OrderSend(req, res)) { // Attempt to send the order to the broker
+        if(res.retcode == TRADE_RETCODE_DONE) return true; // Success
+        if(res.retcode == TRADE_RETCODE_INVALID_FILL) { // If filling type is rejected, try alternatives
+            if(req.type_filling == ORDER_FILLING_FOK) req.type_filling = ORDER_FILLING_IOC;
+            else if(req.type_filling == ORDER_FILLING_IOC) req.type_filling = ORDER_FILLING_RETURN;
+            else req.type_filling = ORDER_FILLING_FOK;
+            if(OrderSend(req, res) && res.retcode == TRADE_RETCODE_DONE) return true; // Retry with new filling type
+        }
+    }
+    return false; // Order failed
+}
+
+//+------------------------------------------------------------------+
+//| Check M5 Trend Direction using LWMA (Fast, Low-Lag MA in MQL5)   |
+//+------------------------------------------------------------------+
+bool CheckM5Trend(string direction) {
+    if(!EnableM5Filter) return true;  // If filter is disabled in inputs, allow all trades
+    
+    // MQL5 Native: Use Linear Weighted MA (MODE_LWMA) on M5 timeframe for fast, low-lag trend detection
+    double m5_ma = iMA(_Symbol, PERIOD_M5, HMA_Period, 0, MODE_LWMA, PRICE_CLOSE);
+    double m5_current_price = SymbolInfoDouble(_Symbol, SYMBOL_BID); // Get current bid price
+    
+    // For BUY signal: M5 must be bullish (price is ABOVE the M5 MA)
+    if(direction == "BUY") {
+        if(m5_current_price > m5_ma) return true;
+        return false;
+    }
+    
+    // For SELL signal: M5 must be bearish (price is BELOW the M5 MA)
+    if(direction == "SELL") {
+        if(m5_current_price < m5_ma) return true;
+        return false;
+    }
+    
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| MQL5 entry point triggered once when the EA is loaded            |
+//+------------------------------------------------------------------+
+int OnInit() {
+    // Auto-detects 3-digit and 5-digit brokers, adjusting points to standard pips
+    pip_size = (_Digits == 3 || _Digits == 5) ? _Point * 10 : _Point;
+    
+    // Queries broker symbol specs to set valid filling policies (FOK/IOC/Return)
+    long fill = SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+    if((fill & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK) order_fill = ORDER_FILLING_FOK;
+    else if((fill & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC) order_fill = ORDER_FILLING_IOC;
+    else order_fill = ORDER_FILLING_RETURN;
+
+    // Clear and delete stored global variables from terminal memory if ResetState is enabled
+    if(ResetState) {
+        GlobalVariableDel("R6_" + IntegerToString(Magic) + "_VB");
+        GlobalVariableDel("R6_" + IntegerToString(Magic) + "_Lvl");
+        GlobalVariableDel("R6_" + IntegerToString(Magic) + "_LP");
+        GlobalVariableDel("R6_" + IntegerToString(Magic) + "_SD");
+        GlobalVariableDel("R6_" + IntegerToString(Magic) + "_SD_Lvl");
+        GlobalVariableDel("R6_" + IntegerToString(Magic) + "_SD_Wins");
+        v_balance = 20.0; c_level = 1; l_profit = 0.0; in_recovery = false;
+        in_stepdown = false; stepdown_level = 0; wins_needed = 0;
+    } else { 
+        LoadState(); // If ResetState is false, loads progress values from cache
+    }
+
+    ArrayResize(pivots, 0); // Clears the memory buffer allocated for swing charts
+    
+    // Creates and opens 4 CSV log files, writing table headers if files are empty
+    log_h = FileOpen("DW_Log.csv", FILE_WRITE|FILE_CSV|FILE_ANSI, ",");
+    if(log_h != INVALID_HANDLE && FileSize(log_h) == 0) FileWrite(log_h, "Time","Dir","Entry","Exit","Pips","USD","Level","Reason");
+    
+    log_trades = FileOpen("DW_trade.csv", FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON, ",");
+    if(log_trades != INVALID_HANDLE && FileSize(log_trades) == 0) FileWrite(log_trades, "Time","Dir","Entry","Exit","Pips","USD","Level","Reason");
+    
+    log_signals = FileOpen("DW_signals.csv", FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON, ",");
+    if(log_signals != INVALID_HANDLE && FileSize(log_signals) == 0) FileWrite(log_signals, "Time","Symbol","SignalType","PivotType","PivotPrice","Status","Reason");
+    
+    log_state = FileOpen("DW_state.csv", FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON, ",");
+    if(log_state != INVALID_HANDLE && FileSize(log_state) == 0) FileWrite(log_state, "Time","Level","v_balance","l_profit","in_stepdown","stepdown_level","wins_needed");
+    
+    // Initialize last_bar to previous closed bar to prevent immediate bar-0 entry on startup
+    last_bar = iTime(_Symbol, PERIOD_M15, 1); 
+    
+    return INIT_SUCCEEDED; // Reports clean initialization to MT5, permitting tick processing
+}
+
+//+------------------------------------------------------------------+
+//| MQL5 exit handler triggered when the EA is shut down             |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason) { 
+    SaveState(); // Automatically preserves all variables before code termination
+    if(log_h != INVALID_HANDLE) FileClose(log_h); // Closes active CSV file systems to prevent data corruption
+    if(log_trades != INVALID_HANDLE) FileClose(log_trades); 
+    if(log_signals != INVALID_HANDLE) FileClose(log_signals); 
+    if(log_state != INVALID_HANDLE) FileClose(log_state); 
+    ObjectsDeleteAll(0, "R6_"); // Clears custom visual graphics generated on chart screens
+}
+
+//+------------------------------------------------------------------+
+//| Main event handler triggered on every incoming price tick        |
+//+------------------------------------------------------------------+
+void OnTick() {
+    datetime cur_bar = iTime(_Symbol, PERIOD_M15, 0); // Get current M15 bar open time
+    bool new_bar = (cur_bar != last_bar); // Detects a new 15-minute bar
+    
+    if(new_bar) { 
+        last_bar = cur_bar; // Update last_bar timestamp
+        UpdatePivots(); // Triggers pivot updates on candle close
+    }
+
+    ulong ticket = GetTicket(); // Scan for existing open positions
+    if(ticket > 0) ManageTrade(ticket); // If an open position exists, executes the trade manager
+    else if(new_bar) CheckSignal(); // If no trade is open, checks for entry opportunities on new M15 candle
+
+    // Overlays EA stats (level, virtual balance, real balance) directly on the chart screen
+    Comment("Pri 5K✅ | Lvl: ", c_level, " | Lot: ", GetLot(), 
+            " | Virtual: $", DoubleToString(v_balance, 2),
+            " | Real: $", DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2));
+}
+
+//+------------------------------------------------------------------+
+//| Scans price history to identify swing highs and swing lows       |
+//+------------------------------------------------------------------+
+void UpdatePivots() {
+    // Caps historical scan up to user-defined ZZ_Lookback window or maximum available history
+    int lb = MathMin(ZZ_Lookback, Bars(_Symbol, PERIOD_M15) - ZZ_Depth - 1);
+    for(int i = lb; i >= ZZ_Depth; i--) {
+        bool is_high = true, is_low = true;
+        // Nested scanning checking if target bar high/low is higher/lower than ZZ_Depth bars around it
+        for(int j = 1; j <= ZZ_Depth; j++) {
+            if(iHigh(_Symbol, PERIOD_M15, i-j) >= iHigh(_Symbol, PERIOD_M15, i)) is_high = false;
+            if(iLow(_Symbol, PERIOD_M15, i-j) <= iLow(_Symbol, PERIOD_M15, i)) is_low = false;
+            if(iHigh(_Symbol, PERIOD_M15, i+j) >= iHigh(_Symbol, PERIOD_M15, i)) is_high = false;
+            if(iLow(_Symbol, PERIOD_M15, i+j) <= iLow(_Symbol, PERIOD_M15, i)) is_low = false;
+        }
+        // If a true peak/trough is confirmed, records it to the pivots database
+        if(is_high) AddPivot(iTime(_Symbol, PERIOD_M15, i), iHigh(_Symbol, PERIOD_M15, i), 1);
+        if(is_low) AddPivot(iTime(_Symbol, PERIOD_M15, i), iLow(_Symbol, PERIOD_M15, i), -1);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Saves or refines detected pivot elements into the dynamic array  |
+//+------------------------------------------------------------------+
+void AddPivot(datetime time, double price, int type) {
+    if(pivot_count == 0) { // Inserts the first pivot into the blank array database
+        ArrayResize(pivots, 1);
+        pivots[0].time = time; 
+        pivots[0].price = price; 
+        pivots[0].type = type;
+        pivot_count = 1; 
+        return;
+    }
+    // If two consecutive pivots are of the same type, updates the record to preserve the extreme price level
+    if(pivots[pivot_count-1].type == type) {
+        if((type == 1 && price > pivots[pivot_count-1].price) || (type == -1 && price < pivots[pivot_count-1].price)) {
+            pivots[pivot_count-1].time = time; 
+            pivots[pivot_count-1].price = price;
+        }
+    } else {
+        // If type alternates, inserts the new pivot if price movement meets the dynamic minimum filter threshold (ZZ_Dev)
+        if(MathAbs(price - pivots[pivot_count-1].price) >= ZZ_Dev * pip_size) {
+            ArrayResize(pivots, pivot_count + 1);
+            pivots[pivot_count].time = time; 
+            pivots[pivot_count].price = price; 
+            pivots[pivot_count].type = type;
+            pivot_count++;
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Scans market conditions to identify potential BUY/SELL opportunities |
+//+------------------------------------------------------------------+
+void CheckSignal() {
+    if(GetTicket() > 0) return; // Safety abort: exits if trade already exists
+    if(skip_next) { skip_next = false; return; } // Safety abort: exits if post-loss skip flag is active
+    
+    // Aborts entry if market spread exceeds user's defined maximum threshold
+    double spread = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID)) / pip_size;
+    if(spread > MaxSpread) return;
+    if(pivot_count < 2) return; // Validates that enough pivot history exists
+
+    Pivot last_p = pivots[pivot_count-1];
+    if(last_p.time == last_pivot_time) return; // Verifies that this pivot has not been traded already
+
+    // Confirms the pivot occurred close enough to current time (within the last 1 to 5 bars)
+    int pivot_bar = iBarShift(_Symbol, PERIOD_M15, last_p.time);
+    if(pivot_bar < 1 || pivot_bar > 5) return;
+
+    // Detects if the last completed M15 candle was green (bullish) or red (bearish)
+    double o1 = iOpen(_Symbol, PERIOD_M15, 1), c1 = iClose(_Symbol, PERIOD_M15, 1);
+    bool bull = (c1 > o1), bear = (c1 < o1);
+
+    // BUY Signal: Triggered if a swing low is followed by a green candle
+    if(last_p.type == -1 && bull) {
+        // ✅ NEW: Check M5 HMA trend filter FIRST (Blocks counter-trend buys)
+        if(!CheckM5Trend("BUY")) {
+            if(log_signals != INVALID_HANDLE) FileWrite(log_signals, TimeToString(TimeCurrent()), _Symbol, "BUY", "LOW", last_p.price, "REJECTED", "M5_HMA_Filter_Bearish");
+            return; // Skip this signal
+        }
+        
+        // Then check high-level trend guard (Level 18+)
+        if(IsTrendAgainst("BUY")) {
+            if(log_signals != INVALID_HANDLE) FileWrite(log_signals, TimeToString(TimeCurrent()), _Symbol, "BUY", "LOW", last_p.price, "REJECTED", "HighLevel_Guard_Bearish");
+        } else {
+            if(log_signals != INVALID_HANDLE) FileWrite(log_signals, TimeToString(TimeCurrent()), _Symbol, "BUY", "LOW", last_p.price, "ENTERED", "PivotLow_Green");
+            last_pivot_time = last_p.time; 
+            OpenTrade("BUY", "PivotLow_Green");
+        }
+    } 
+    // SELL Signal: Triggered if a swing high is followed by a red candle
+    else if(last_p.type == 1 && bear) {
+        // ✅ NEW: Check M5 HMA trend filter FIRST (Blocks counter-trend sells)
+        if(!CheckM5Trend("SELL")) {
+            if(log_signals != INVALID_HANDLE) FileWrite(log_signals, TimeToString(TimeCurrent()), _Symbol, "SELL", "HIGH", last_p.price, "REJECTED", "M5_HMA_Filter_Bullish");
+            return; // Skip this signal
+        }
+        
+        // Then check high-level trend guard (Level 18+)
+        if(IsTrendAgainst("SELL")) {
+            if(log_signals != INVALID_HANDLE) FileWrite(log_signals, TimeToString(TimeCurrent()), _Symbol, "SELL", "HIGH", last_p.price, "REJECTED", "HighLevel_Guard_Bullish");
+        } else {
+            if(log_signals != INVALID_HANDLE) FileWrite(log_signals, TimeToString(TimeCurrent()), _Symbol, "SELL", "HIGH", last_p.price, "ENTERED", "PivotHigh_Red");
+            last_pivot_time = last_p.time; 
+            OpenTrade("SELL", "PivotHigh_Red");
+        }
+    } else {
+        // Logs rejected signals to the signals CSV file for debugging
+        if(log_signals != INVALID_HANDLE) FileWrite(log_signals, TimeToString(TimeCurrent()), _Symbol,
+            (bull?"BULL":"BEAR"), (last_p.type==-1?"LOW":"HIGH"), last_p.price, "REJECTED",
+            (last_p.type==-1&&!bull?"NoBullAfterGreen":(last_p.type==1&&!bear?"NoBearAfterRed":"Unknown")));
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Executes management checks for active open positions             |
+//+------------------------------------------------------------------+
+void ManageTrade(ulong ticket) {
+    if(!PositionSelectByTicket(ticket)) return;
+    long p_type = PositionGetInteger(POSITION_TYPE);
+    string dir = (p_type == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+    double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+    double cur = (dir == "BUY") ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double pips = (dir == "BUY") ? (cur - entry)/pip_size : (entry - cur)/pip_size; // Calculate current floating pips
+
+    ApplySafeNet(dir, entry, cur, pips); // Calculates protection updates (moves SL to BE or trails profit)
+
+    // Early exit: If standard profit targets are hit and momentum remains strong, closes the trade early
+    if(EnableChain && pips >= TP_Pips && CheckMomentum(dir)) {
+        CloseTrade(ticket, pips, "CHAIN_TP");
+        return;
+    }
+
+    // Counter-signal exit: Closes the position if price hits a new opposite swing high/low while in profit > 25 pips
+    if(pivot_count >= 2 && pips > 25.0) {
+        Pivot last_p = pivots[pivot_count-1];
+        if(dir == "BUY" && last_p.type == 1) CloseTrade(ticket, pips, "PIVOT_EXIT");
+        else if(dir == "SELL" && last_p.type == -1) CloseTrade(ticket, pips, "PIVOT_EXIT");
+    }
+
+    if(pips <= -SL_Pips) CloseTrade(ticket, pips, "SL_HIT"); // Hard Stop Loss execution trigger
+}
+
+//+------------------------------------------------------------------+
+//| Calculates and updates the trade's Stop Loss and Take Profit levels dynamically |
+//+------------------------------------------------------------------+
+void ApplySafeNet(string dir, double entry, double cur, double pips) {
+    double cur_sl = PositionGetDouble(POSITION_SL);
+    double cur_tp = PositionGetDouble(POSITION_TP);
+    double new_sl = cur_sl;
+    double new_tp = cur_tp;
+    double orig_tp_dist = TP_Pips * pip_size;
+
+    // Break-Even: Locks in BE_Profit when the trade runs in profit by BE_Trigger
+    if(pips >= BE_Trigger && safe_phase < 2) {
+        if(dir == "BUY") {
+            new_sl = entry + (BE_Profit * pip_size);
+            new_tp = cur + orig_tp_dist;
+        } else {
+            new_sl = entry - (BE_Profit * pip_size);
+            new_tp = cur - orig_tp_dist;
+        }
+        safe_phase = 2;
+    }
+
+    // Trailing Stop: When price moves beyond Trail_Trigger, trails the Stop Loss by Trail_Dist pips
+    if(pips >= Trail_Trigger && safe_phase < 3) {
+        if(dir == "BUY") {
+            new_sl = cur - (Trail_Dist * pip_size);
+            new_tp = cur + orig_tp_dist;
+        } else {
+            new_sl = cur + (Trail_Dist * pip_size);
+            new_tp = cur - orig_tp_dist;
+        }
+        safe_phase = 3;
+    }
+
+    // Normalizes SL/TP prices to matching digit precision and exits if no adjustments are needed
+    double norm_new_sl = NormalizeDouble(new_sl, _Digits);
+    double norm_cur_sl = NormalizeDouble(cur_sl, _Digits);
+    double norm_new_tp = NormalizeDouble(new_tp, _Digits);
+    double norm_cur_tp = NormalizeDouble(cur_tp, _Digits);
+
+    if(norm_new_sl == norm_cur_sl && norm_new_tp == norm_cur_tp) return;
+
+    // Dispatches SL/TP adjustment request to the broker
+    MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res);
+    req.action = TRADE_ACTION_SLTP; req.symbol = _Symbol; req.position = PositionGetTicket(0);
+    req.sl = norm_new_sl; req.tp = norm_new_tp;
+
+    if(!OrderSend(req, res)) {
+        if(res.retcode != TRADE_RETCODE_INVALID) Print("SL/TP Error: ", res.retcode);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Evaluates price momentum before triggering early chain exits     |
+//+------------------------------------------------------------------+
+bool CheckMomentum(string dir) {
+    int consec = 0;
+    for(int i=1; i<=Mom_Candles; i++) {
+        double o = iOpen(_Symbol, PERIOD_M15, i), c = iClose(_Symbol, PERIOD_M15, i);
+        if((dir == "BUY" && c > o) || (dir == "SELL" && c < o)) consec++;
+    }
+    return consec >= Mom_Candles; // Returns true if the last Mom_Candles closed consistently in the trade's direction
+}
+
+//+------------------------------------------------------------------+
+//| Trend guard to prevent trading against prevailing short-term trend |
+//+------------------------------------------------------------------+
+bool IsTrendAgainst(string dir) {
+    // Guard only activates at high levels (Level 18 or above) where trade sizes are large and dangerous
+    if(c_level < 18) return false;
+    
+    int bear = 0, bull = 0;
+    for(int i=1; i<=3; i++) { // Checks the last 3 candles
+        double o = iOpen(_Symbol, PERIOD_M15, i);
+        double c = iClose(_Symbol, PERIOD_M15, i);
+        if(c < o) bear++; else if(c > o) bull++;
+    }
+    // If selling when the last candles are bullish (or vice-versa), rejects the entry
+    if(dir == "BUY" && bear > bull) return true;
+    if(dir == "SELL" && bull > bear) return true;
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Execution function to construct and send entry orders            |
+//+------------------------------------------------------------------+
+void OpenTrade(string dir, string reason) {
+    double lot = GetLot(); // Retrieves lot size based on Virtual Balance
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK), bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double entry = (dir == "BUY") ? ask : bid;
+    double sl = NormalizeDouble((dir == "BUY") ? entry - (SL_Pips * pip_size) : entry + (SL_Pips * pip_size), _Digits);
+    double tp = NormalizeDouble((dir == "BUY") ? entry + (TP_Pips * pip_size) : entry - (TP_Pips * pip_size), _Digits);
+
+    // Real-account crosscheck: Calculates required margin
+    double margin_req = 0;
+    if(!OrderCalcMargin((dir=="BUY")?ORDER_TYPE_BUY:ORDER_TYPE_SELL, _Symbol, lot, entry, margin_req)) return;
+    
+    // Safety gate: Rejects the trade if real free margin is insufficient (plus $1.00 buffer)
+    if(AccountInfoDouble(ACCOUNT_MARGIN_FREE) < margin_req + 1.0) return;
+
+    // Compiles trade request data (Market order, volume, SL, TP, magic number)
+    MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res);
+    req.action = TRADE_ACTION_DEAL; req.symbol = _Symbol; req.volume = lot; req.price = entry;
+    req.sl = sl; req.tp = tp; req.magic = (long)Magic; req.deviation = 10; req.type_filling = order_fill;
+    if(dir == "BUY") req.type = ORDER_TYPE_BUY; else req.type = ORDER_TYPE_SELL;
+
+    if(SendOrder(req, res)) { // Sends order to broker
+        safe_phase = 0; // Reset safe phase for new trade
+        Print("ENTRY: ", dir, " ", lot, " @ ", entry, " | SL: ", sl, " | TP: ", tp);
+        if(log_h != INVALID_HANDLE) FileWrite(log_h, TimeToString(TimeCurrent()), dir, entry, 0, 0, 0, c_level, reason);
+        if(log_trades != INVALID_HANDLE) FileWrite(log_trades, TimeToString(TimeCurrent()), dir, entry, 0, 0, 0, c_level, reason);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Execution function to close active positions                     |
+//+------------------------------------------------------------------+
+void CloseTrade(ulong ticket, double pips, string reason) {
+    if(!PositionSelectByTicket(ticket)) return;
+    long p_type = PositionGetInteger(POSITION_TYPE);
+    string dir = (p_type == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+    double lot = PositionGetDouble(POSITION_VOLUME), entry = PositionGetDouble(POSITION_PRICE_OPEN);
+
+    // Builds a counter-order request to close the position
+    MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res);
+    double close = (dir == "BUY") ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    req.action = TRADE_ACTION_DEAL; req.symbol = _Symbol; req.volume = lot; req.price = close; req.position = ticket;
+    req.magic = (long)Magic; req.deviation = 10; req.type_filling = order_fill;
+    if(dir == "BUY") req.type = ORDER_TYPE_SELL; else req.type = ORDER_TYPE_BUY;
+
+    if(SendOrder(req, res)) { // Executes position closure
+        // Calculates estimated USD performance: pips * pip_size * 100,000 * lot
+        double usd = pips * pip_size * 100000 * lot;
+        Print("EXIT: ", pips, " pips | $", usd, " | ", reason);
+        if(log_h != INVALID_HANDLE) FileWrite(log_h, TimeToString(TimeCurrent()), dir, entry, close, pips, usd, c_level, reason);
+        if(log_trades != INVALID_HANDLE) FileWrite(log_trades, TimeToString(TimeCurrent()), dir, entry, close, pips, usd, c_level, reason);
+
+        ProcessTradeResult(usd); // Updates the level logs and virtual balance
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Sizing engine processing performance results to handle level step-ups or step-downs |
+//+------------------------------------------------------------------+
+void ProcessTradeResult(double profit_usd) {
+    v_balance += profit_usd; // Updates the main virtual tracking balance with profit/loss outcome
+    int prev_level = c_level; // Store level before processing to detect if reset threshold is crossed
+
+    if (profit_usd < 0) { // LOSS PROCESS
+        in_stepdown = true; // Lowers level c_level by 1, enables in_stepdown state
+        stepdown_level = c_level; 
+        c_level = MathMax(1, c_level - 1);
+        wins_needed = 1; // Forces wins_needed = 1
+        skip_next = true; // Schedules a trade skip to avoid emotional market churn
+        l_profit = 0;
+        
+        // Re-validates level caps based on current virtual balance
+        int new_lvl = 1;
+        for(int lvl = 30; lvl >= 1; lvl--) { 
+            if(v_balance >= levels_total[lvl]) { new_lvl = lvl; break; } 
+        }
+        if(new_lvl < c_level) { c_level = new_lvl; }
+        
+        Print("STEPDOWN: loss $", profit_usd, " level ", stepdown_level, " -> ", c_level, " needs ", wins_needed, " wins");
+    } else { // WIN PROCESS
+        if (in_stepdown) { // Stepdown Recovery Win
+            l_profit += profit_usd; 
+            wins_needed--;
+            if (wins_needed <= 0) { // Re-evaluates level alignment once target wins are achieved
+                in_stepdown = false; 
+                if(v_balance >= levels_total[stepdown_level]) {
+                    c_level = stepdown_level; 
+                } else {
+                    for(int lvl = 30; lvl >= 1; lvl--) { 
+                        if(v_balance >= levels_total[lvl]) { c_level = lvl; break; } 
+                    }
+                }
+                l_profit = 0; 
+            }
+        } else { // Normal Win
+            l_profit += profit_usd;
+            if (l_profit >= goals[c_level]) { // Increments level c_level once profit goal is reached
+                c_level++; 
+                if (c_level > 30) c_level = 30; 
+                l_profit = 0; 
+            }
+        }
+    }
+    
+    // ✅ UPDATED: Level lock set to 15 (Resets when level 15 closes to prevent catastrophic high-level losses)
+    if (prev_level == 15 || c_level > 15) {
+        c_level = 1;
+        v_balance = 20.0;
+        l_profit = 0.0;
+        in_stepdown = false;
+        stepdown_level = 0;
+        wins_needed = 0;
+        in_recovery = false;
+        Print("✅ Order flow 15th closed: Resetting counter to 1st level and Virtual Balance to $20.0");
+    }
+
+    // Checks if virtual balance fell below recovery levels, updating state flags
+    if(v_balance < 20.0 && !TestMode) in_recovery = true; else in_recovery = false;
+    
+    SaveState(); // Saves updated state data to global memory cache
+    if(log_state != INVALID_HANDLE) FileWrite(log_state, TimeToString(TimeCurrent()), c_level, DoubleToString(v_balance,2), DoubleToString(l_profit,2), in_stepdown?1:0, stepdown_level, wins_needed);
+}
+
+//+------------------------------------------------------------------+
+//| Calculates order volume based on Virtual Balance state           |
+//+------------------------------------------------------------------+
+double GetLot() {
+    if (v_balance < 20.0 && !TestMode) return 0.01; // Forces safety volume (0.01) if Recovery Mode is active
+    if (c_level < 1) c_level = 1; // Normalize range bounds
+    if (c_level > 30) c_level = 30;
+    return lots[c_level]; // Returns the predefined lot size for the active level
+}
+
+//+------------------------------------------------------------------+
+//| Scans for open positions matching the EA's Magic Number          |
+//+------------------------------------------------------------------+
+ulong GetTicket() {
+    for(int i=PositionsTotal()-1; i>=0; i--) { // Iterates active positions on account
+        ulong t = PositionGetTicket(i);
+        if(t > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == (long)Magic) return t;
+    }
+    return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Imports cached progress values from Terminal Global Memory       |
+//+------------------------------------------------------------------+
+void LoadState() {
+    string p = "R6_" + IntegerToString(Magic) + "_";
+    double sb = GlobalVariableGet(p + "VB"); 
+    int sl = (int)GlobalVariableGet(p + "Lvl"); 
+    double lp = GlobalVariableGet(p + "LP");
+    double sd = GlobalVariableGet(p + "SD"); 
+    int sdl = (int)GlobalVariableGet(p + "SD_Lvl"); 
+    int sdw = (int)GlobalVariableGet(p + "SD_Wins");
+    
+    // Overwrites default state variables with the loaded values
+    if(sb > 0) v_balance = sb; 
+    if(sl > 0) c_level = sl; 
+    if(lp >= 0) l_profit = lp;
+    if(sd > 0) in_stepdown = true; 
+    if(sdl > 0) stepdown_level = sdl; 
+    if(sdw > 0) wins_needed = sdw;
+}
+
+//+------------------------------------------------------------------+
+//| Exports active progress variables to Terminal Global Memory      |
+//+------------------------------------------------------------------+
+void SaveState() {
+    string p = "R6_" + IntegerToString(Magic) + "_";
+    GlobalVariableSet(p + "VB", v_balance); 
+    GlobalVariableSet(p + "Lvl", c_level); 
+    GlobalVariableSet(p + "LP", l_profit);
+    GlobalVariableSet(p + "SD", in_stepdown ? 1.0 : 0.0); 
+    GlobalVariableSet(p + "SD_Lvl", stepdown_level); 
+    GlobalVariableSet(p + "SD_Wins", wins_needed);
+}
+//+------------------------------------------------------------------+
