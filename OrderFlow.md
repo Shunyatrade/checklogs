@@ -32,3 +32,4 @@
 | 29    | $31,006          | 15%             | $4,650.88| $9,301.76    | 10   | 46.51    | $40,308        |
 | 30    | $40,308          | 15%             | $6,046.14| $12,092.29   | 10   | 60.46    | $52,400        |
 ```
+https://www.mql5.com/en/market/product/172117?source=Site+Market+MT5+Free+Rating006#description
