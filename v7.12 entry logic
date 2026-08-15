@@ -38,3 +38,30 @@ SELL requires
 7. Meaningful bearish structure break
 8. Entry ≤ 5 pips from pivot
 9. Entry extension ≤ 2 pips
+
+Persistent Market Structure
+        ↓
+Bullish / Bearish permission
+        ↓
+Confirmed appropriate pivot
+        ↓
+1–2 candle reversal window
+        ↓
+Fast direction confirmation
+        ↓
+5-pip pivot distance
+        ↓
+2-pip extension limit
+        ↓
+ENTRY
+
+
+BLUE ZIGZAG LINE / PIVOT CONFIRMS
+              ↓
+      REVERSAL CANDLE
+              ↓
+   GREEN after LOW → BUY
+   RED after HIGH  → SELL
+              ↓
+   ENTER immediately
+
