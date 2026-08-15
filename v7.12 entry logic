@@ -1,0 +1,40 @@
+             PREVIOUS MARKET STRUCTURE
+                       │
+             ┌─────────┴─────────┐
+             │                   │
+          HH + HL             LH + LL
+             │                   │
+          BUY LOCK            SELL LOCK
+             │                   │
+             ▼                   ▼
+       confirmed LOW       confirmed HIGH
+             │                   │
+       reversal candle     reversal candle
+             │                   │
+       structure break     structure break
+             │                   │
+             ▼                   ▼
+           BUY                 SELL
+
+
+BUY requires
+1. Confirmed LOW pivot
+2. Previous structure = bullish
+3. Current pivot is a Higher Low
+4. Fast bullish direction
+5. Bullish reversal candle
+6. Close above pivot candle high
+7. Meaningful bullish structure break
+8. Entry ≤ 5 pips from pivot
+9. Entry extension ≤ 2 pips
+
+SELL requires
+1. Confirmed HIGH pivot
+2. Previous structure = bearish
+3. Current pivot is a Lower High
+4. Fast bearish direction
+5. Bearish reversal candle
+6. Close below pivot candle low
+7. Meaningful bearish structure break
+8. Entry ≤ 5 pips from pivot
+9. Entry extension ≤ 2 pips
