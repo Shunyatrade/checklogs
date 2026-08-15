@@ -1,0 +1,48 @@
+                    M15 CLOSED CANDLE
+                           │
+                           ▼
+                  PRICE STRUCTURE
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+           BULLISH                   BEARISH
+              │                         │
+              ▼                         ▼
+          BUY BIAS                  SELL BIAS
+              │                         │
+              └────────────┬────────────┘
+                           │
+                           ▼
+                  CONFIRMED PIVOT
+                           │
+                           ▼
+                 ENTRY CONFIRMATION
+                           │
+                           ▼
+                      EXECUTE
+                           │
+                           ▼
+                    REAL MT5 TRADE
+                           │
+                           ▼
+                   TRADE CLOSES
+                           │
+                           ▼
+                OnTradeTransaction()
+                           │
+                           ▼
+                 ACTUAL TRADE PROFIT
+                           │
+                           ▼
+                ORDER FLOW ENGINE
+                           │
+        ┌──────────────────┴──────────────────┐
+        │                                     │
+      PROFIT                                LOSS
+        │                                     │
+        ▼                                     ▼
+   advance level                         step-down
+        │                                     │
+        └──────────────────┬──────────────────┘
+                           ▼
+                    SAVE STATE + LOG
