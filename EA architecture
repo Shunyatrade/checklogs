@@ -46,3 +46,28 @@
         └──────────────────┬──────────────────┘
                            ▼
                     SAVE STATE + LOG
+
+
+//|  1. Confirmed blue-line pivot remains the primary trigger.       |
+//|  2. Reversal candle remains the immediate confirmation.         |
+//|  3. BUY requires pivot-candle lower-wick rejection by default.   |
+//|  4. SELL keeps v7.14 confirmation behavior by default.           |
+//|  5. Optional market-structure filters remain OFF by default.    |
+//|  6. Rejects late entry extension after reversal close.            |
+//|  7. Entry happens immediately on the first tick after reversal. |
+//|  8. TP20 / SL15 / BE+2 -> SL+2 unchanged.                        |
+//|  9. Real MT5 deal transactions are the P/L source of truth.      |
+//| 10. V-Balance is NEVER overwritten by real account balance.     |
+//| 11. Real Balance / Equity / V-Balance are logged separately.     |
+//| 12. Max level is configurable 1..31; default is continuous 31.    |
+//| 13. Virtual reset is OFF by default; peaks are never reset.       |
+//| 14. TP/SL/BE broker exits are captured by OnTradeTransaction.    |
+//| 15. Position history includes commission/swap/fee in net P/L.   |
+//| 16. RealDelta is measured from the pre-transaction balance.      |
+//| 17. Signal logs include pivot rejection metrics.                 |
+//| 18. High-water mark and peak recovery are persistent.             |
+//| 19. Level losses no longer force a 0.01-lot recovery trap.       |
+//| 20. +2 pips is protection; profitable runners can continue.      |
+//| 21. Runner stages protect +4/+7/+11 before fixed TP20.          |
+//| 22. Fast 3-candle direction must agree with pivot direction.    |
+//+------------------------------------------------------------------+
