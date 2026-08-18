@@ -189,6 +189,22 @@ EXIT    = separate exit evidence
 //+------------------------------------------------------------------+
 orange = decision/rejection evidence, blue = BUY entries, red = SELL entries.
 //+------------------------------------------------------------------+
-
+                R6 / ZZ
+             Depth = 3
+                  │
+            Confirmed Pivot
+             /          \
+          LOW            HIGH
+           │              │
+   bullish reversal   bearish reversal
+      candle             candle
+           │              │
+         BUY             SELL
+           │              │
+      Bar0 Low-2     Bar0 High+2
+           │              │
+             +11 pips
+                 ↓
+          protect profit
 //+------------------------------------------------------------------+
 
