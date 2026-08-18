@@ -207,4 +207,9 @@ orange = decision/rejection evidence, blue = BUY entries, red = SELL entries.
                  ↓
           protect profit
 //+------------------------------------------------------------------+
-
+Bar0: The candle where the ZigZag peak/trough formed.
+Bar1: The candle immediately after Bar0.
+SELL Entry: Triggered on Close of Bar1 after a Peak, with SL = Bar0 High + 2 pips.
+BUY Entry / Reversal: On Close of Bar1 after a Bottom, closes any open SELL and places BUY with SL = Bar0 Low - 2 pips.
+SafeNet: Once order moves +11 pips in direction, moves SL inside profit to lock +2 pips.
+Take Profit: Target set to +20 pips.
