@@ -71,3 +71,39 @@
 //| 21. Runner stages protect +4/+7/+11 before fixed TP20.          |
 //| 22. Fast 3-candle direction must agree with pivot direction.    |
 //+------------------------------------------------------------------+
+
+PRICE FALLING
+      ↓
+pivot low / reversal area
+      ↓
+PRICE STARTS TURNING UP
+      ↓
+EA should BUY here
+      ↓
+instead EA waits
+      ↓
+price already moves up
+      ↓
+EA BUY
+      ↓
+price reverses
+      ↓
+LOSS
+//+------------------------------------------------------------------+
+PRICE RISING
+      ↓
+pivot high / reversal area
+      ↓
+PRICE STARTS TURNING DOWN
+      ↓
+EA should SELL here
+      ↓
+EA waits
+      ↓
+price already moves down
+      ↓
+EA SELL
+      ↓
+price reverses
+      ↓
+LOSS
