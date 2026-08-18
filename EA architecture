@@ -171,15 +171,23 @@ Price moves:
 0.70005   -0.5 pip
 EXIT      +1 pip
 //+------------------------------------------------------------------+
-
+🟠 Orange arrows/text = EA decision/rejection markers
+REJECT BUY | BullishConfirmationMissing
+REJECT SELL | BearishConfirmationMissing
+REJECT SELL | SellConfirmationBodyTooLarge
 //+------------------------------------------------------------------+
-
+🔵 Blue = BUY
+BUY L1 FastPivotLowReversal
 //+------------------------------------------------------------------+
-
+🔴 Red = SELL
+SELL L1 FastPivotHighReversal
 //+------------------------------------------------------------------+
-
+ORANGE  = decision / rejection evidence
+BLUE    = BUY entry
+RED     = SELL entry
+EXIT    = separate exit evidence
 //+------------------------------------------------------------------+
-
+orange = decision/rejection evidence, blue = BUY entries, red = SELL entries.
 //+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
