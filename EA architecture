@@ -144,13 +144,32 @@ Wait for bearish reversal
     ↓
 SELL
 //+------------------------------------------------------------------+
+MFE = Maximum Favorable Excursion
 
+MFE tells us the best profit the trade reached while it was open.
 //+------------------------------------------------------------------+
+BUY @ 0.70000
 
+Price moves:
+0.70005   +0.5 pip
+0.70010   +1 pip
+0.70020   +2 pips
+0.70030   +3 pips   ← best point
+0.70015   +1.5 pips
+EXIT      +1 pip
 //+------------------------------------------------------------------+
+MAE = Maximum Adverse Excursion
 
+MAE tells us the worst drawdown the trade reached while it was open.
 //+------------------------------------------------------------------+
+SELL @ 0.70000
 
+Price moves:
+0.70005   -0.5 pip
+0.70010   -1 pip
+0.70015   -1.5 pips   ← worst point
+0.70005   -0.5 pip
+EXIT      +1 pip
 //+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
